@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.unera.social.data.audio.CallAudioEngine
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -126,14 +127,25 @@ fun CallOverlay(
         }
     }
 
-    // Call duration timer
+    // Call duration timer and audio session management
     LaunchedEffect(isConnected) {
         if (isConnected) {
+            CallAudioEngine.startCallSession(
+                context = context,
+                isVideo = isVideoMode,
+                initialSpeakerOn = speakerOn
+            )
             callSeconds = 0
             while (true) {
                 delay(1000)
                 callSeconds++
             }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            CallAudioEngine.endCallSession()
         }
     }
 
@@ -583,6 +595,7 @@ fun CallOverlay(
                             activeColor = Color(0xFFEF4444),
                             onClick = {
                                 muted = !muted
+                                CallAudioEngine.setMicrophoneMuted(muted)
                                 Toast.makeText(
                                     context,
                                     if (muted) "Muted" else "Unmuted",
@@ -617,6 +630,7 @@ fun CallOverlay(
                             activeColor = Color(0xFF1877F2),
                             onClick = {
                                 speakerOn = !speakerOn
+                                CallAudioEngine.setSpeakerphoneOn(speakerOn)
                                 Toast.makeText(
                                     context,
                                     if (speakerOn) "Speakerphone on" else "Earpiece mode",

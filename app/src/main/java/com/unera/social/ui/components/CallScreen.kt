@@ -26,7 +26,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import com.unera.social.data.audio.CallAudioEngine
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -111,11 +113,31 @@ fun CallScreen(
         }
     }
 
+    val context = LocalContext.current
     val showVideo = mode == CallMode.VIDEO
     val isIncoming = phase == CallPhase.INCOMING
     val isActive = phase == CallPhase.ACTIVE
     val isConnecting = phase == CallPhase.CONNECTING || phase == CallPhase.OUTGOING
     val canSwap = showVideo && onSwap != null
+
+    var internalMicOn by remember { mutableStateOf(micOn) }
+    var internalSpeakerOn by remember { mutableStateOf(speakerOn) }
+
+    LaunchedEffect(open, mode, phase) {
+        if (open && (phase == CallPhase.ACTIVE || phase == CallPhase.OUTGOING || phase == CallPhase.CONNECTING)) {
+            CallAudioEngine.startCallSession(
+                context = context,
+                isVideo = showVideo,
+                initialSpeakerOn = internalSpeakerOn
+            )
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            CallAudioEngine.endCallSession()
+        }
+    }
 
     // Determine streams for full and small picture-in-picture video
     val effectiveRemoteStream = remoteStreamUrl ?: (if (showVideo && isActive) peerAvatar else null)
@@ -356,9 +378,13 @@ fun CallScreen(
                         } else {
                             // Speaker Toggle
                             CallIconBtn(
-                                icon = if (speakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                                onClick = onToggleSpeaker,
-                                muted = !speakerOn,
+                                icon = if (internalSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                                onClick = {
+                                    internalSpeakerOn = !internalSpeakerOn
+                                    CallAudioEngine.setSpeakerphoneOn(internalSpeakerOn)
+                                    onToggleSpeaker()
+                                },
+                                muted = !internalSpeakerOn,
                                 label = "Speaker",
                                 testTag = "call_speaker_btn"
                             )
@@ -366,9 +392,13 @@ fun CallScreen(
 
                         // Microphone Toggle
                         CallIconBtn(
-                            icon = if (micOn) Icons.Default.Mic else Icons.Default.MicOff,
-                            onClick = onToggleMic,
-                            muted = !micOn,
+                            icon = if (internalMicOn) Icons.Default.Mic else Icons.Default.MicOff,
+                            onClick = {
+                                internalMicOn = !internalMicOn
+                                CallAudioEngine.setMicrophoneMuted(!internalMicOn)
+                                onToggleMic()
+                            },
+                            muted = !internalMicOn,
                             label = "Mic",
                             testTag = "call_mic_btn"
                         )

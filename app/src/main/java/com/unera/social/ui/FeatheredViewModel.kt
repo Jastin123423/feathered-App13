@@ -93,6 +93,7 @@ data class FeatheredUiState(
     val showCreateStoryDialog: Boolean = false,
     val showMenuOverlay: Boolean = false,
     val selectedUserProfile: User? = null,
+    val selectedUserProfileTab: String = "Posts",
     // F-Music state
     val songs: List<Song> = emptyList(),
     val isSongsLoading: Boolean = false,
@@ -2739,10 +2740,15 @@ class FeatheredViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         launchSafe {
+            // Detect format: OGG (OggS magic header 0x4F, 0x67, 0x67, 0x53) or M4A/AAC
+            val isOgg = fileBytes.size >= 4 && fileBytes[0] == 0x4F.toByte() && fileBytes[1] == 0x67.toByte()
+            val mimeType = if (isOgg) "audio/ogg" else "audio/mp4"
+            val extension = if (isOgg) ".ogg" else ".m4a"
+
             val att = MessagesApiService.uploadBytes(
                 bytes = fileBytes,
-                filename = "voice-${System.currentTimeMillis()}.webm",
-                mimeType = "audio/webm",
+                filename = "voice-${System.currentTimeMillis()}$extension",
+                mimeType = mimeType,
                 folder = "chat",
                 token = token,
                 durationSeconds = durationSec
@@ -3211,10 +3217,11 @@ class FeatheredViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun openUserProfile(user: User) {
+    fun openUserProfile(user: User, tab: String = "Posts") {
         _uiState.update { state ->
             state.copy(
                 selectedUserProfile = user,
+                selectedUserProfileTab = tab,
                 currentScreen = Screen.PROFILE
             )
         }
@@ -3247,10 +3254,10 @@ class FeatheredViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun openUserProfileById(userId: Long) {
+    fun openUserProfileById(userId: Long, tab: String = "Posts") {
         val cached = _uiState.value.users.find { it.id == userId }
         if (cached != null) {
-            openUserProfile(cached)
+            openUserProfile(cached, tab = tab)
         } else {
             viewModelScope.launch {
                 val liveUser = VideosApiService.fetchUser(userId)
@@ -3258,12 +3265,12 @@ class FeatheredViewModel(application: Application) : AndroidViewModel(applicatio
                     _uiState.update { state ->
                         state.copy(users = (state.users + liveUser).distinctBy { it.id })
                     }
-                    openUserProfile(liveUser)
+                    openUserProfile(liveUser, tab = tab)
                 } else {
                     val fromPost = _uiState.value.posts.find { it.author.id == userId }?.author
                         ?: _uiState.value.videoPosts.find { it.author.id == userId }?.author
                     if (fromPost != null) {
-                        openUserProfile(fromPost)
+                        openUserProfile(fromPost, tab = tab)
                     }
                 }
             }

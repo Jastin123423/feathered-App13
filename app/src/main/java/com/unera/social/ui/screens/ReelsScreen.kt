@@ -61,6 +61,8 @@ import com.unera.social.R
 import com.unera.social.data.VideosApiService
 import com.unera.social.model.*
 import com.unera.social.ui.components.FacebookReactionDock
+import com.unera.social.ui.components.ShareBottomSheetDialog
+import com.unera.social.ui.components.ReelCommentsBottomSheetDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -170,9 +172,19 @@ fun ReelsScreen(
     onOpenMenu: (() -> Unit)? = null,
     unreadNotificationsCount: Int = 2,
     unreadMessagesCount: Int = 0,
+    onAddComment: ((Long, String) -> Unit)? = null,
+    onAddReply: ((Long, Long, String) -> Unit)? = null,
+    onLikeComment: ((Long, Long) -> Unit)? = null,
+    onDeleteComment: ((Long, Long) -> Unit)? = null,
+    onToggleHideComment: ((Long, Long, Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
+
+    var activeDiscussionsPost by remember { mutableStateOf<Post?>(null) }
+    var shareSheetPost by remember { mutableStateOf<Post?>(null) }
 
     // 1. Fetch live sponsored feed ads if empty
     var internalAds by remember { mutableStateOf<List<SponsoredFeedAd>>(ads) }
@@ -358,9 +370,14 @@ fun ReelsScreen(
                     post = videoPost,
                     isActive = isActive,
                     currentUser = currentUser,
+                    users = users,
                     onReact = { p, type -> onReact?.invoke(p, type) },
-                    onOpenComments = { p -> onOpenComments?.invoke(p) },
+                    onOpenComments = { p ->
+                        activeDiscussionsPost = p
+                        onOpenComments?.invoke(p)
+                    },
                     onShare = { postId, count -> onShare?.invoke(postId, count) },
+                    onShareClick = { p -> shareSheetPost = p },
                     onFollow = { authorId -> onFollow?.invoke(authorId) },
                     onProfileClick = { authorId -> onProfileClick?.invoke(authorId) },
                     onSavePost = { postId -> onSavePost?.invoke(postId) },
@@ -411,6 +428,61 @@ fun ReelsScreen(
                 }
             }
         }
+
+        // 1. Facebook Reel Comments Half-Screen Bottom Sheet Dialog
+        activeDiscussionsPost?.let { currentPost ->
+            ReelCommentsBottomSheetDialog(
+                post = currentPost,
+                currentUser = currentUser ?: currentPost.author,
+                allUsers = users,
+                onDismiss = { activeDiscussionsPost = null },
+                onAddComment = { text: String ->
+                    onAddComment?.invoke(currentPost.id, text)
+                },
+                onAddReply = { parentId: Long, text: String ->
+                    onAddReply?.invoke(currentPost.id, parentId, text)
+                },
+                onLikeComment = { commentId: Long ->
+                    onLikeComment?.invoke(currentPost.id, commentId)
+                },
+                onDeleteComment = { commentId: Long ->
+                    onDeleteComment?.invoke(currentPost.id, commentId)
+                },
+                onToggleHideComment = { commentId: Long, isHidden: Boolean ->
+                    onToggleHideComment?.invoke(currentPost.id, commentId, isHidden)
+                },
+                onProfileClick = { author: User ->
+                    activeDiscussionsPost = null
+                    onProfileClick?.invoke(author.id)
+                }
+            )
+        }
+
+        // 2. Share Panel Bottom Sheet Dialog as in FeedScreen
+        shareSheetPost?.let { currentPost ->
+            ShareBottomSheetDialog(
+                post = currentPost,
+                onDismiss = { shareSheetPost = null },
+                onShareToFeed = {
+                    shareSheetPost = null
+                    onShare?.invoke(currentPost.id, currentPost.sharesCount)
+                },
+                onShareToGroup = {
+                    shareSheetPost = null
+                    onShare?.invoke(currentPost.id, currentPost.sharesCount)
+                },
+                onSendMessage = {
+                    shareSheetPost = null
+                    onShare?.invoke(currentPost.id, currentPost.sharesCount)
+                },
+                onCopyLink = {
+                    shareSheetPost = null
+                    val shareUrl = "https://featheredsocial.site/posts/${currentPost.id}"
+                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(shareUrl))
+                    Toast.makeText(context, "Link copied to clipboard", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
     }
 }
 
@@ -423,9 +495,11 @@ private fun FacebookVideoItemView(
     post: Post,
     isActive: Boolean,
     currentUser: User?,
+    users: List<User> = emptyList(),
     onReact: (Post, String) -> Unit,
     onOpenComments: (Post) -> Unit,
     onShare: (Long, Int) -> Unit,
+    onShareClick: (Post) -> Unit = {},
     onFollow: (Long) -> Unit,
     onProfileClick: (Long) -> Unit,
     onSavePost: (Long) -> Unit,
@@ -530,7 +604,11 @@ private fun FacebookVideoItemView(
     var controlsVisible by remember { mutableStateOf(true) }
     var showHeartBurst by remember { mutableStateOf(false) }
     var isCaptionExpanded by remember { mutableStateOf(false) }
-    var isFollowingState by remember { mutableStateOf(false) }
+
+    // Live follow state reading synchronized with UserProfile & Feedscreen
+    val isFollowingLive = remember(users, post.author.id, post.author.isFollowing) {
+        users.find { it.id == post.author.id }?.isFollowing ?: post.author.isFollowing
+    }
 
     // Dynamic reaction state
     var localLiked by remember(post.isLiked, post.myReaction) {
@@ -897,7 +975,8 @@ private fun FacebookVideoItemView(
                                 text = post.author.name,
                                 fontSize = 19.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = Color.White,
+                                modifier = Modifier.clickable { onProfileClick(post.author.id) }
                             )
 
                             Icon(
@@ -907,28 +986,36 @@ private fun FacebookVideoItemView(
                                 modifier = Modifier.size(16.dp)
                             )
 
-                            // Follow Pill Button
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (isFollowingState) Color.White.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.35f),
-                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
-                                modifier = Modifier
-                                    .height(30.dp)
-                                    .clickable {
-                                        isFollowingState = !isFollowingState
-                                        onFollow(post.author.id)
-                                    }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                            // Follow Pill Button (Live synchronized with UserProfile & Feedscreen)
+                            if (currentUser == null || post.author.id != currentUser.id) {
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (isFollowingLive) Color.White.copy(alpha = 0.25f) else Color(0xFF1877F2),
+                                    border = BorderStroke(1.dp, if (isFollowingLive) Color.White.copy(alpha = 0.6f) else Color(0xFF1877F2)),
+                                    modifier = Modifier
+                                        .height(30.dp)
+                                        .clickable {
+                                            onFollow(post.author.id)
+                                        }
                                 ) {
-                                    Text(
-                                        text = if (isFollowingState) "Following" else "Follow",
-                                        color = Color.White,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isFollowingLive) Icons.Filled.Check else Icons.Filled.PersonAdd,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (isFollowingLive) "Following" else "Follow",
+                                            color = Color.White,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1074,7 +1161,7 @@ private fun FacebookVideoItemView(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(Color.Black.copy(alpha = 0.35f))
-                                .clickable { onShare(post.id, post.sharesCount) }
+                                .clickable { onShareClick(post) }
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Icon(

@@ -373,10 +373,15 @@ fun FeatheredApp(
                         stories = uiState.stories,
                         isLoading = uiState.isVideosLoading,
                         onReact = { post, type -> viewModel.reactToPost(post.id, type) },
-                        onOpenComments = { post -> viewModel.setSelectedPostForComments(post) },
+                        onOpenComments = null,
                         onShare = { postId, _ -> viewModel.sharePost(postId) },
                         onFollow = { userId -> viewModel.toggleFollowUser(userId) },
-                        onProfileClick = { userId -> viewModel.openUserProfileById(userId) },
+                        onProfileClick = { userId -> viewModel.openUserProfileById(userId, tab = "Videos") },
+                        onAddComment = { postId, text -> viewModel.addComment(postId, text) },
+                        onAddReply = { postId, parentId, text -> viewModel.addReply(postId, parentId, text) },
+                        onLikeComment = { postId, commentId -> viewModel.likeComment(postId, commentId) },
+                        onDeleteComment = { postId, commentId -> viewModel.deleteComment(postId, commentId) },
+                        onToggleHideComment = { postId, commentId, isHidden -> viewModel.hideComment(postId, commentId, isHidden) },
                         onStoryClick = { userId ->
                             val st = uiState.stories.find { it.author.id == userId }
                             if (st != null) {
@@ -524,6 +529,8 @@ fun FeatheredApp(
                         onEditPost = { id, text -> viewModel.editPost(id, text) },
                         onPushMore = { viewModel.pushMore(it) },
                         pushedPosts = uiState.pushedPosts,
+                        onOpenVideo = { post -> viewModel.openVideoReel(post) },
+                        initialTab = uiState.selectedUserProfileTab,
                         onBack = if (activeUser.id != uiState.currentUser.id) {
                             { viewModel.openCurrentUserProfile() }
                         } else null,

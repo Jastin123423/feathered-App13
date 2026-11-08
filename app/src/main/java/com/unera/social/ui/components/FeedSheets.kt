@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -104,11 +105,13 @@ fun GalleryViewerDialog(
     onLike: () -> Unit,
     onComment: () -> Unit,
     onShare: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    onReact: ((String) -> Unit)? = null
 ) {
     if (images.isEmpty()) return
 
     var currentIndex by remember { mutableIntStateOf(initialIndex.coerceIn(0, images.size - 1)) }
+    var showReactionDock by remember { mutableStateOf(false) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -242,31 +245,62 @@ fun GalleryViewerDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = onLike) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // React Button: 3D animated Facebook reactions dock on hold/long-press
+                            FacebookReactionButton(
+                                isLiked = post.isLiked,
+                                myReaction = post.myReaction,
+                                likesCount = post.likesCount,
+                                onLike = onLike,
+                                onReact = { reaction -> onReact?.invoke(reaction) ?: onLike() },
+                                showReactionDock = showReactionDock,
+                                onToggleReactionDock = { showReactionDock = it },
+                                modifier = Modifier.testTag("gallery_like_post_btn_${post.id}")
+                            )
+
+                            // Discuss Button (Exact Web: far fa-comment 22px #F8FAFC, hover #38BDF8)
+                            DiscussButton(
+                                commentCount = post.commentsCount,
+                                onClick = onComment,
+                                testTag = "gallery_comment_post_btn_${post.id}"
+                            )
+
+                            // Share Button (Facing Northeast: ↗, Send icon rotated -35deg)
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onShare)
+                                    .padding(horizontal = 4.dp, vertical = 4.dp)
+                                    .testTag("gallery_share_post_btn_${post.id}"),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Icon(
-                                    imageVector = if (post.isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                    contentDescription = "Like",
-                                    tint = if (post.isLiked) Color(0xFFF43F5E) else Color(0xFFF8FAFC)
-                                )
-                            }
-                            IconButton(onClick = onComment) {
-                                Icon(
-                                    imageVector = Icons.Outlined.ChatBubbleOutline,
-                                    contentDescription = "Comment",
-                                    tint = Color(0xFFF8FAFC)
-                                )
-                            }
-                            IconButton(onClick = onShare) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    imageVector = Icons.Default.Send,
                                     contentDescription = "Share",
-                                    tint = Color(0xFFF8FAFC)
+                                    tint = Color(0xFFF8FAFC),
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .graphicsLayer(rotationZ = -35f)
                                 )
+                                if (post.sharesCount > 0) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = formatCount(post.sharesCount),
+                                        color = Color(0xFFF8FAFC),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
                             }
                         }
 
-                        IconButton(onClick = onSave) {
+                        IconButton(
+                            onClick = onSave,
+                            modifier = Modifier.testTag("gallery_save_post_btn_${post.id}")
+                        ) {
                             Icon(
                                 imageVector = if (post.isSaved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
                                 contentDescription = "Save",
@@ -1436,6 +1470,586 @@ fun DiscussionsSheetDialog(
                 post.story != null || post.postType == "story" -> "story"
                 else -> "post"
             }
+            CommentActionModal(
+                isOpen = true,
+                onClose = { selectedCommentForActions = null },
+                comment = c,
+                currentUserId = currentUser.id,
+                isAdmin = currentUser.role in listOf("admin", "moderator"),
+                onToggleHide = { commentId ->
+                    val newHidden = !c.isHidden
+                    liveComments = liveComments.map { if (it.id == commentId) it.copy(isHidden = newHidden) else it }
+                    coroutineScope.launch {
+                        FeedInteractionApiService.hideComment(
+                            itemType = itemType,
+                            commentId = commentId,
+                            userId = currentUser.id,
+                            parentId = post.id,
+                            action = if (newHidden) "hide" else "unhide"
+                        )
+                    }
+                    onToggleHideComment?.invoke(commentId, newHidden)
+                    selectedCommentForActions = null
+                },
+                onDelete = { commentId ->
+                    liveComments = liveComments.filter { it.id != commentId }
+                    coroutineScope.launch {
+                        FeedInteractionApiService.deleteComment(
+                            itemType = itemType,
+                            commentId = commentId,
+                            userId = currentUser.id,
+                            parentId = post.id
+                        )
+                    }
+                    onDeleteComment?.invoke(commentId)
+                    selectedCommentForActions = null
+                },
+                onReply = { comment ->
+                    replyingToComment = comment
+                    replyingToAuthor = comment.author.name
+                }
+            )
+        }
+    }
+}
+
+/**
+ * Facebook Reel Comments Bottom Sheet Dialog:
+ * Half-screen sliding bottom sheet panel displaying all discussions/comments for the reel.
+ * Uses the exact same comment text sizes (20.sp for comment body, 19.sp for author name),
+ * thread lines, replies, likes/reactions dock, image attachments, emoji picker, and full feature set
+ * as Feedscreen, presented as a Facebook Reel bottom panel over the playing video.
+ */
+@Composable
+fun ReelCommentsBottomSheetDialog(
+    post: Post,
+    currentUser: User,
+    onDismiss: () -> Unit,
+    onAddComment: (String) -> Unit = {},
+    onAddReply: ((Long, String) -> Unit)? = null,
+    onLikeComment: (Long) -> Unit = {},
+    onDeleteComment: ((Long) -> Unit)? = null,
+    onToggleHideComment: ((Long, Boolean) -> Unit)? = null,
+    onProfileClick: ((User) -> Unit)? = null,
+    allUsers: List<User> = emptyList()
+) {
+    val coroutineScope = rememberCoroutineScope()
+    var newCommentText by remember { mutableStateOf("") }
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var replyingToComment by remember { mutableStateOf<Comment?>(null) }
+    var replyingToAuthor by remember { mutableStateOf<String?>(null) }
+    var expandedCommentIds by remember { mutableStateOf(setOf<Long>()) }
+    var showEmojiPicker by remember { mutableStateOf(false) }
+    var selectedCommentForActions by remember { mutableStateOf<Comment?>(null) }
+    val listState = rememberLazyListState()
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        selectedImageUri = uri
+    }
+
+    var liveComments by remember(post.id) {
+        mutableStateOf(FeedInteractionApiService.organizeCommentsIntoThreads(post.comments))
+    }
+    var isLoadingComments by remember(post.id) { mutableStateOf(post.comments.isEmpty()) }
+
+    LaunchedEffect(post.id) {
+        val fetched = FeedInteractionApiService.fetchComments(post, currentUser.id)
+        if (fetched.isNotEmpty() || post.comments.isEmpty()) {
+            val confirmed = fetched.filter { it.id > 0 }
+            val pending = liveComments.filter { it.id < 0 }.filterNot { pend ->
+                confirmed.any { conf ->
+                    conf.author.id == pend.author.id && conf.text.trim() == pend.text.trim()
+                }
+            }.distinctBy { "${it.author.id}_${it.text.trim()}" }
+            val allMerged = (confirmed + pending).distinctBy { it.id }
+            liveComments = FeedInteractionApiService.organizeCommentsIntoThreads(allMerged)
+        }
+        isLoadingComments = false
+    }
+
+    val quickEmojis = listOf("❤️", "🔥", "😂", "👏", "🙌", "😍", "✨", "💯", "🎉")
+    val totalDiscussions = if (liveComments.isNotEmpty()) {
+        liveComments.sumOf { 1 + it.replies.size }
+    } else post.commentsCount
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                ),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.68f)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { /* prevent dismiss when clicking panel */ }
+                    .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                    .testTag("reel_comments_bottom_sheet_dialog"),
+                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Top drag handle bar (Facebook Reel style)
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 10.dp, bottom = 4.dp)
+                            .size(44.dp, 4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color(0xFF475569))
+                            .align(Alignment.CenterHorizontally)
+                    )
+
+                    // Header row: Title with total discussions & Close X button
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (totalDiscussions > 0) "${formatCount(totalDiscussions)} discussions" else "Discussions",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF1E293B))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close discussions",
+                                tint = Color(0xFFCBD5E1),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = Color(0xFF1E293B), thickness = 1.dp)
+
+                    // Scrollable list of comments & replies (same styling & text sizes as FeedScreen)
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        if (isLoadingComments && liveComments.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 40.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(
+                                        color = Color(0xFF1877F2),
+                                        modifier = Modifier.size(32.dp),
+                                        strokeWidth = 3.dp
+                                    )
+                                }
+                            }
+                        } else if (liveComments.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 40.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = "No discussions yet",
+                                            fontSize = 19.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFB0B3B8)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Be the first to start a discussion!",
+                                            fontSize = 14.sp,
+                                            color = Color(0xFF94A3B8)
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            items(liveComments, key = { it.id }) { comment ->
+                                val canDeleteComment = currentUser.role in listOf("admin", "moderator") || comment.author.id == currentUser.id
+                                val isExpanded = expandedCommentIds.contains(comment.id)
+                                val itemType = "post"
+
+                                Box(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                                    CommentItemRow(
+                                        comment = comment,
+                                        canDelete = canDeleteComment,
+                                        isExpanded = isExpanded,
+                                        onToggleExpand = {
+                                            expandedCommentIds = if (isExpanded) {
+                                                expandedCommentIds - comment.id
+                                            } else {
+                                                expandedCommentIds + comment.id
+                                            }
+                                        },
+                                        onLike = {
+                                            liveComments = liveComments.map { c ->
+                                                if (c.id == comment.id) {
+                                                    val newLiked = !c.isLiked
+                                                    val newCount = if (newLiked) c.likesCount + 1 else (c.likesCount - 1).coerceAtLeast(0)
+                                                    c.copy(isLiked = newLiked, myReaction = if (newLiked) "like" else null, likesCount = newCount)
+                                                } else c
+                                            }
+                                            coroutineScope.launch {
+                                                FeedInteractionApiService.likeComment(itemType, comment.id, currentUser.id)
+                                            }
+                                            onLikeComment(comment.id)
+                                        },
+                                        onReact = { reactionType ->
+                                            liveComments = liveComments.map { c ->
+                                                if (c.id == comment.id) {
+                                                    val wasLiked = c.isLiked
+                                                    val newCount = if (!wasLiked) c.likesCount + 1 else c.likesCount
+                                                    c.copy(isLiked = true, myReaction = reactionType, likesCount = newCount)
+                                                } else c
+                                            }
+                                            coroutineScope.launch {
+                                                FeedInteractionApiService.likeComment(itemType, comment.id, currentUser.id)
+                                            }
+                                            onLikeComment(comment.id)
+                                        },
+                                        onReply = {
+                                            replyingToComment = comment
+                                            replyingToAuthor = comment.author.name
+                                        },
+                                        onLikeReply = { reply ->
+                                            liveComments = liveComments.map { p ->
+                                                if (p.id == comment.id) {
+                                                    p.copy(replies = p.replies.map { r ->
+                                                        if (r.id == reply.id) {
+                                                            val newLiked = !r.isLiked
+                                                            val newCount = if (newLiked) r.likesCount + 1 else (r.likesCount - 1).coerceAtLeast(0)
+                                                            r.copy(isLiked = newLiked, likesCount = newCount)
+                                                        } else r
+                                                    })
+                                                } else p
+                                            }
+                                            coroutineScope.launch {
+                                                FeedInteractionApiService.likeComment(itemType, reply.id, currentUser.id)
+                                            }
+                                            onLikeComment(reply.id)
+                                        },
+                                        onReplyToUser = { _, targetName ->
+                                            replyingToComment = comment
+                                            replyingToAuthor = targetName
+                                        },
+                                        onToggleHide = {
+                                            val newHidden = !comment.isHidden
+                                            liveComments = liveComments.map { if (it.id == comment.id) it.copy(isHidden = newHidden) else it }
+                                            coroutineScope.launch {
+                                                FeedInteractionApiService.hideComment(itemType, comment.id, currentUser.id, post.id, if (newHidden) "hide" else "unhide")
+                                            }
+                                            onToggleHideComment?.invoke(comment.id, newHidden)
+                                        },
+                                        onDelete = {
+                                            liveComments = liveComments.filter { it.id != comment.id }
+                                            coroutineScope.launch {
+                                                FeedInteractionApiService.deleteComment(itemType, comment.id, currentUser.id, post.id)
+                                            }
+                                            onDeleteComment?.invoke(comment.id)
+                                        },
+                                        onMoreOptions = { selectedCommentForActions = comment },
+                                        onUserClick = { onProfileClick?.invoke(comment.author) },
+                                        allUsers = allUsers,
+                                        currentUser = currentUser
+                                    )
+                                }
+                            }
+                        }
+
+                        item {
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                    }
+
+                    // Replying to banner if active
+                    if (replyingToAuthor != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF162137))
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Reply,
+                                    contentDescription = null,
+                                    tint = Color(0xFF38BDF8),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(text = "Replying to ", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                                Text(text = replyingToAuthor ?: "", fontSize = 12.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                            }
+                            IconButton(
+                                onClick = {
+                                    replyingToComment = null
+                                    replyingToAuthor = null
+                                },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.Close, contentDescription = "Cancel reply", tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+                    // Selected image preview if chosen
+                    if (selectedImageUri != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF0F172A))
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Box(modifier = Modifier.size(60.dp)) {
+                                AsyncImage(
+                                    model = selectedImageUri,
+                                    contentDescription = "Selected attachment",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+                                )
+                                IconButton(
+                                    onClick = { selectedImageUri = null },
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .align(Alignment.TopEnd)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.7f))
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Remove image",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Quick emoji picker bar
+                    if (showEmojiPicker) {
+                        LazyRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF0B1120))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(quickEmojis) { emoji ->
+                                Text(
+                                    text = emoji,
+                                    fontSize = 24.sp,
+                                    modifier = Modifier
+                                        .clickable { newCommentText += emoji }
+                                        .padding(4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Bottom Comment Input Box (Feedscreen matching)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0B1120))
+                            .border(1.dp, Color(0xFF1E293B))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FeatheredAvatar(
+                            name = currentUser.name,
+                            imageUrl = currentUser.profileImageUrl,
+                            size = 36.dp,
+                            username = currentUser.username
+                        )
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // Image attachment button
+                        IconButton(
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Image,
+                                contentDescription = "Attach image",
+                                tint = if (selectedImageUri != null) Color(0xFF1877F2) else Color(0xFF94A3B8),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        // Emoji toggle button
+                        IconButton(
+                            onClick = { showEmojiPicker = !showEmojiPicker },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.SentimentSatisfied,
+                                contentDescription = "Emoji",
+                                tint = if (showEmojiPicker) Color(0xFF1877F2) else Color(0xFF94A3B8),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        // Text field
+                        OutlinedTextField(
+                            value = newCommentText,
+                            onValueChange = { newCommentText = it },
+                            placeholder = {
+                                Text(
+                                    text = if (replyingToAuthor != null) "Reply to $replyingToAuthor..." else "Comment as ${currentUser.name.split(" ").firstOrNull() ?: "you"}...",
+                                    color = Color(0xFF64748B),
+                                    fontSize = 14.sp
+                                )
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = Color(0xFF0F172A),
+                                unfocusedContainerColor = Color(0xFF0F172A),
+                                focusedTextColor = Color(0xFFF8FAFC),
+                                unfocusedTextColor = Color(0xFFF8FAFC),
+                                focusedBorderColor = Color(0xFF1877F2),
+                                unfocusedBorderColor = Color(0xFF1E293B)
+                            ),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 4.dp),
+                            singleLine = true
+                        )
+
+                        // Send Button
+                        val canSend = newCommentText.isNotBlank() || selectedImageUri != null
+                        IconButton(
+                            onClick = {
+                                if (canSend) {
+                                    val trimmedText = newCommentText.trim()
+                                    val tempId = -System.currentTimeMillis()
+                                    if (replyingToComment != null) {
+                                        val parentId = replyingToComment!!.id
+                                        val targetAuthorName = replyingToAuthor ?: replyingToComment!!.author.name
+                                        val optimisticReply = Comment(
+                                            id = tempId,
+                                            author = currentUser,
+                                            text = trimmedText,
+                                            timestamp = "Just now",
+                                            parentCommentId = parentId,
+                                            replyToAuthorName = if (!targetAuthorName.equals(replyingToComment!!.author.name, ignoreCase = true)) targetAuthorName else null,
+                                            imageUrl = selectedImageUri?.toString()
+                                        )
+                                        liveComments = liveComments.map { p ->
+                                            if (p.id == parentId) {
+                                                p.copy(replies = (p.replies.filter { it.id != tempId } + optimisticReply).distinctBy { it.id })
+                                            } else p
+                                        }
+                                        expandedCommentIds = expandedCommentIds + parentId
+                                        coroutineScope.launch {
+                                            val result = FeedInteractionApiService.addComment(
+                                                post = post,
+                                                userId = currentUser.id,
+                                                text = trimmedText,
+                                                parentCommentId = parentId,
+                                                imageUrl = selectedImageUri?.toString()
+                                            )
+                                            if (result?.comment != null) {
+                                                val serverComment = result.comment
+                                                liveComments = liveComments.map { p ->
+                                                    if (p.id == parentId) {
+                                                        val updatedReplies = p.replies.map { r ->
+                                                            if (r.id == tempId) serverComment else r
+                                                        }.distinctBy { it.id }
+                                                        p.copy(replies = updatedReplies)
+                                                    } else p
+                                                }
+                                            }
+                                        }
+                                        onAddReply?.invoke(parentId, trimmedText)
+                                    } else {
+                                        val optimistic = Comment(
+                                            id = tempId,
+                                            author = currentUser,
+                                            text = trimmedText,
+                                            timestamp = "Just now",
+                                            imageUrl = selectedImageUri?.toString()
+                                        )
+                                        val withoutDuplicates = liveComments.filterNot { it.id < 0 && it.text.trim() == trimmedText && it.author.id == currentUser.id }
+                                        liveComments = withoutDuplicates.filter { it.id != tempId } + optimistic
+                                        onAddComment(trimmedText)
+                                        coroutineScope.launch {
+                                            delay(100)
+                                            val target = (liveComments.size + 1).coerceAtLeast(0)
+                                            listState.animateScrollToItem(target)
+                                        }
+                                    }
+                                    newCommentText = ""
+                                    selectedImageUri = null
+                                    replyingToComment = null
+                                    replyingToAuthor = null
+                                    showEmojiPicker = false
+                                }
+                            },
+                            enabled = canSend,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(if (canSend) Color(0xFF1877F2) else Color(0xFF1E293B))
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = if (canSend) Color.White else Color(0xFF64748B),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Comment Action Modal
+        selectedCommentForActions?.let { c ->
+            val itemType = "post"
             CommentActionModal(
                 isOpen = true,
                 onClose = { selectedCommentForActions = null },

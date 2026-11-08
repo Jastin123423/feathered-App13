@@ -98,6 +98,8 @@ fun ProfileScreen(
     onEditPost: ((Long, String) -> Unit)? = null,
     onPushMore: ((Post) -> Unit)? = null,
     pushedPosts: Map<Long, Boolean> = emptyMap(),
+    onOpenVideo: ((Post) -> Unit)? = null,
+    initialTab: String = "Posts",
     onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -112,7 +114,7 @@ fun ProfileScreen(
         }
     }
 
-    var selectedTab by remember { mutableStateOf("Posts") }
+    var selectedTab by remember(initialTab, user.id) { mutableStateOf(initialTab) }
     var showEditProfileModal by remember { mutableStateOf(false) }
     var showModActionsMenu by remember { mutableStateOf(false) }
     var showSuspendDialog by remember { mutableStateOf(false) }
@@ -875,78 +877,45 @@ fun ProfileScreen(
                         }
                     } else {
                         items(userPosts, key = { it.id }) { post ->
-                            val isStandaloneVideo = post.postType == "video" || post.postType == "reel" ||
-                                (post.mediaType == "video" && PostsApiService.isValidVideoUrl(post.videoUrl)) ||
-                                (PostsApiService.isValidVideoUrl(post.videoUrl) && post.mediaUrls.isEmpty()) ||
-                                (post.mediaMeta.firstOrNull()?.type == "video" && PostsApiService.isValidVideoUrl(post.mediaMeta.firstOrNull()?.resolution720 ?: post.mediaMeta.firstOrNull()?.original)) ||
-                                !post.videoUrl.isNullOrBlank() ||
-                                (post.mediaUrl?.let { PostsApiService.isValidVideoUrl(it) } == true)
-
-                            if (isStandaloneVideo) {
-                                InstagramVideoCard(
-                                    post = post,
-                                    currentUser = currentUser,
-                                    stories = allStories,
-                                    isGuest = isGuest,
-                                    onRequestAuth = onRequestAuth,
-                                    isFollowing = isFollowing,
-                                    onFollow = {
-                                        if (isGuest) onRequestAuth() else onFollowUser(user.id)
-                                    },
-                                    onProfileClick = { authorId ->
-                                        val authorUser = allUsers.find { it.id == authorId } ?: user
-                                        onProfileClick(authorUser)
-                                    },
-                                    onStoryClick = { authorId ->
-                                        val story = allStories.find { s -> s.author.id == authorId }
-                                        if (story != null) onProfileClick(user)
-                                    },
-                                    onReact = { _, reaction ->
-                                        if (isGuest) onRequestAuth()
-                                        else onReactPost?.invoke(post.id, reaction) ?: onLikePost(post.id)
-                                    },
-                                    onOpenComments = {
-                                        if (isGuest) onRequestAuth() else onCommentPost(post)
-                                    },
-                                    onShareClick = {
-                                        if (isGuest) onRequestAuth() else onSharePost(post.id)
-                                    },
-                                    onDelete = { onDeletePost?.invoke(it) },
-                                    onEdit = { id, text -> onEditPost?.invoke(id, text) },
-                                    onPush = onPushMore
-                                )
-                            } else {
-                                PostCard(
-                                    post = post,
-                                    currentUser = currentUser,
-                                    isFollowing = isFollowing,
-                                    onFollowToggle = {
-                                        if (isGuest) onRequestAuth() else onFollowUser(user.id)
-                                    },
-                                    onLike = {
-                                        if (isGuest) onRequestAuth() else onLikePost(post.id)
-                                    },
-                                    onComment = {
-                                        if (isGuest) onRequestAuth() else onCommentPost(post)
-                                    },
-                                    onSave = {
-                                        if (isGuest) onRequestAuth() else onSavePost(post.id)
-                                    },
-                                    onShare = {
-                                        if (isGuest) onRequestAuth() else onSharePost(post.id)
-                                    },
-                                    onPushMore = onPushMore,
-                                    pushedPosts = pushedPosts,
-                                    onOpenGallery = { imgs, idx ->
-                                        activePostForGallery = post
-                                        galleryState = Pair(imgs, idx)
-                                    },
-                                    onOpenProduct = onOpenProduct,
-                                    onDeletePost = onDeletePost,
-                                    onEditPost = onEditPost,
-                                    onUserClick = {}
-                                )
-                            }
+                            PostCard(
+                                post = post,
+                                currentUser = currentUser,
+                                isFollowing = isFollowing,
+                                onFollowToggle = {
+                                    if (isGuest) onRequestAuth() else onFollowUser(user.id)
+                                },
+                                onLike = {
+                                    if (isGuest) onRequestAuth() else onLikePost(post.id)
+                                },
+                                onReact = { reaction ->
+                                    if (isGuest) onRequestAuth()
+                                    else onReactPost?.invoke(post.id, reaction) ?: onLikePost(post.id)
+                                },
+                                onComment = {
+                                    if (isGuest) onRequestAuth() else onCommentPost(post)
+                                },
+                                onSave = {
+                                    if (isGuest) onRequestAuth() else onSavePost(post.id)
+                                },
+                                onShare = {
+                                    if (isGuest) onRequestAuth() else onSharePost(post.id)
+                                },
+                                onOpenVideo = { postToOpen ->
+                                    onOpenVideo?.invoke(postToOpen)
+                                },
+                                onPushMore = onPushMore,
+                                pushedPosts = pushedPosts,
+                                onOpenGallery = { imgs, idx ->
+                                    activePostForGallery = post
+                                    galleryState = Pair(imgs, idx)
+                                },
+                                onOpenProduct = onOpenProduct,
+                                onDeletePost = onDeletePost,
+                                onEditPost = onEditPost,
+                                onUserClick = {
+                                    onProfileClick(post.author)
+                                }
+                            )
                             Spacer(modifier = Modifier.height(8.dp))
                         }
                     }
@@ -963,37 +932,44 @@ fun ProfileScreen(
                         }
                     } else {
                         items(userVideoPosts, key = { "profile_video_${it.id}" }) { post ->
-                            InstagramVideoCard(
+                            PostCard(
                                 post = post,
                                 currentUser = currentUser,
-                                stories = allStories,
-                                isGuest = isGuest,
-                                onRequestAuth = onRequestAuth,
                                 isFollowing = isFollowing,
-                                onFollow = {
+                                onFollowToggle = {
                                     if (isGuest) onRequestAuth() else onFollowUser(user.id)
                                 },
-                                onProfileClick = { authorId ->
-                                    val authorUser = allUsers.find { it.id == authorId } ?: user
-                                    onProfileClick(authorUser)
+                                onLike = {
+                                    if (isGuest) onRequestAuth() else onLikePost(post.id)
                                 },
-                                onStoryClick = { authorId ->
-                                    val story = allStories.find { s -> s.author.id == authorId }
-                                    if (story != null) onProfileClick(user)
-                                },
-                                onReact = { _, reaction ->
+                                onReact = { reaction ->
                                     if (isGuest) onRequestAuth()
                                     else onReactPost?.invoke(post.id, reaction) ?: onLikePost(post.id)
                                 },
-                                onOpenComments = {
+                                onComment = {
                                     if (isGuest) onRequestAuth() else onCommentPost(post)
                                 },
-                                onShareClick = {
+                                onSave = {
+                                    if (isGuest) onRequestAuth() else onSavePost(post.id)
+                                },
+                                onShare = {
                                     if (isGuest) onRequestAuth() else onSharePost(post.id)
                                 },
-                                onDelete = { onDeletePost?.invoke(it) },
-                                onEdit = { id, text -> onEditPost?.invoke(id, text) },
-                                onPush = onPushMore
+                                onOpenVideo = { postToOpen ->
+                                    onOpenVideo?.invoke(postToOpen)
+                                },
+                                onPushMore = onPushMore,
+                                pushedPosts = pushedPosts,
+                                onOpenGallery = { imgs, idx ->
+                                    activePostForGallery = post
+                                    galleryState = Pair(imgs, idx)
+                                },
+                                onOpenProduct = onOpenProduct,
+                                onDeletePost = onDeletePost,
+                                onEditPost = onEditPost,
+                                onUserClick = {
+                                    onProfileClick(post.author)
+                                }
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                         }
@@ -1185,6 +1161,7 @@ fun ProfileScreen(
                     activePostForGallery = null
                 },
                 onLike = { onLikePost(galleryPost.id) },
+                onReact = { reaction -> onReactPost?.invoke(galleryPost.id, reaction) ?: onLikePost(galleryPost.id) },
                 onComment = { onCommentPost(galleryPost) },
                 onShare = { onSharePost(galleryPost.id) },
                 onSave = { onSavePost(galleryPost.id) }

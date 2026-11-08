@@ -48,8 +48,13 @@ import com.unera.social.model.ChatAttachment
 import com.unera.social.model.ChatMessage
 import com.unera.social.model.Conversation
 import com.unera.social.model.User
+import com.unera.social.data.audio.VoiceNoteManager
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -119,9 +124,10 @@ fun ChatWindow(
     var actionModalMsg by remember { mutableStateOf<ChatMessage?>(null) }
     var viewingAttachment by remember { mutableStateOf<ChatAttachment?>(null) }
 
-    // Voice recording simulation
+    // Voice recording states
     var isRecording by remember { mutableStateOf(false) }
     var recordSeconds by remember { mutableStateOf(0) }
+    var recordAmplitude by remember { mutableFloatStateOf(0.15f) }
 
     // Call Screen states (for local fallback)
     var callOpen by remember { mutableStateOf(false) }
@@ -132,13 +138,18 @@ fun ChatWindow(
     var isCamOn by remember { mutableStateOf(true) }
     var isSpeakerOn by remember { mutableStateOf(true) }
 
-    // Voice recorder timer
+    // Voice recorder timer and live amplitude metering
     LaunchedEffect(isRecording) {
         if (isRecording) {
             recordSeconds = 0
+            var tick = 0
             while (isRecording) {
-                delay(1000)
-                recordSeconds++
+                delay(100)
+                tick++
+                if (tick % 10 == 0) {
+                    recordSeconds++
+                }
+                recordAmplitude = VoiceNoteManager.getMaxAmplitudeNormalized().coerceAtLeast(0.12f)
             }
         }
     }
@@ -395,14 +406,15 @@ fun ChatWindow(
                             fontWeight = FontWeight.Bold
                         )
 
-                        // Animated simulated waveform bars
+                        // Animated live speech waveform bars
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.height(20.dp)
+                            modifier = Modifier.height(24.dp)
                         ) {
-                            repeat(12) { i ->
-                                val barHeight = (8 + (sin((recordSeconds * 2 + i).toDouble()) * 8).toInt()).coerceIn(4, 20)
+                            repeat(14) { i ->
+                                val waveMod = (sin((i * 0.9).toDouble()) * 0.5 + 0.5).toFloat()
+                                val barHeight = (6 + (recordAmplitude * 20f * waveMod)).roundToInt().coerceIn(4, 22)
                                 Box(
                                     modifier = Modifier
                                         .width(3.dp)
@@ -415,7 +427,11 @@ fun ChatWindow(
                     }
 
                     TextButton(
-                        onClick = { isRecording = false },
+                        onClick = {
+                            VoiceNoteManager.cancelRecording()
+                            isRecording = false
+                            recordSeconds = 0
+                        },
                         colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF6B6B))
                     ) {
                         Text("Cancel", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -1020,21 +1036,33 @@ fun ChatWindow(
                             onClick = {
                                 if (isRecording) {
                                     isRecording = false
-                                    val duration = recordSeconds.coerceAtLeast(1)
-                                    if (onSendVoiceNote != null) {
-                                        val dummyPcm = ByteArray(duration * 1024) { 0 }
-                                        onSendVoiceNote(dummyPcm, duration)
-                                    } else {
-                                        val voiceNote = ChatAttachment(
-                                            url = "https://actions.google.com/sounds/v1/ambiences/rain_heavy.ogg",
-                                            fileType = "audio",
-                                            filename = "voice_note_${System.currentTimeMillis()}.ogg",
-                                            durationSeconds = duration
-                                        )
-                                        onSendAttachment?.invoke(voiceNote, "") ?: onSendMessage("🎤 Voice Note (${duration}s)", null)
+                                    val recordingResult = VoiceNoteManager.stopRecording()
+                                    if (recordingResult != null) {
+                                        val duration = recordingResult.durationSeconds
+                                        val bytes = try { recordingResult.file.readBytes() } catch (_: Exception) { ByteArray(0) }
+                                        try { recordingResult.file.delete() } catch (_: Exception) {}
+
+                                        if (bytes.isNotEmpty()) {
+                                            if (onSendVoiceNote != null) {
+                                                onSendVoiceNote(bytes, duration)
+                                            } else {
+                                                val voiceNote = ChatAttachment(
+                                                    url = "",
+                                                    fileType = "audio",
+                                                    filename = "voice_note_${System.currentTimeMillis()}.${if (recordingResult.mimeType == "audio/ogg") "ogg" else "m4a"}",
+                                                    durationSeconds = duration
+                                                )
+                                                onSendAttachment?.invoke(voiceNote, "") ?: onSendMessage("🎤 Voice Note (${duration}s)", null)
+                                            }
+                                        }
                                     }
                                 } else {
-                                    isRecording = true
+                                    val started = VoiceNoteManager.startRecording(context)
+                                    if (started) {
+                                        isRecording = true
+                                    } else {
+                                        Toast.makeText(context, "Microphone permission needed to record voice note", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             },
                             modifier = Modifier.size(30.dp)
@@ -1354,56 +1382,198 @@ fun DeliveryTicksView(isSeen: Boolean, isDelivered: Boolean) {
 }
 
 /**
- * VoiceNotePlayerView - Voice note audio player matching WhatsApp / Messenger waveform
+ * VoiceNotePlayerView - Professional voice note audio player matching WhatsApp / Messenger
+ * features:
+ * - Real audio playback powered by Media3 ExoPlayer (Opus/OGG, AAC/M4A, WebM, MP3)
+ * - Play / Pause / Resume controls
+ * - Interactive scrubbable 22-bar waveform
+ * - Dynamic elapsed / remaining playback countdown (m:ss)
+ * - 1x / 1.5x / 2x playback speed switcher
+ * - Lifecycle-aware resource disposal
  */
 @Composable
 fun VoiceNotePlayerView(attachment: ChatAttachment, isMine: Boolean) {
+    val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
+    var playbackPositionMs by remember { mutableLongStateOf(0L) }
+    var totalDurationMs by remember {
+        mutableLongStateOf(((attachment.durationSeconds ?: 0) * 1000L).coerceAtLeast(1000L))
+    }
+    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+
+    val rawUrl = attachment.url.trim()
+    val isValidUrl = remember(rawUrl) {
+        rawUrl.isNotBlank() && rawUrl != "null" && (rawUrl.startsWith("http://") || rawUrl.startsWith("https://") || rawUrl.startsWith("content://") || rawUrl.startsWith("file://"))
+    }
+
+    val exoPlayer = remember(rawUrl) {
+        if (isValidUrl) {
+            ExoPlayer.Builder(context).build().apply {
+                try {
+                    setMediaItem(MediaItem.fromUri(rawUrl))
+                    prepare()
+                } catch (_: Exception) {}
+            }
+        } else null
+    }
+
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) {
+                    val dur = exoPlayer?.duration ?: -1L
+                    if (dur > 0L) totalDurationMs = dur
+                } else if (state == Player.STATE_ENDED) {
+                    isPlaying = false
+                    exoPlayer?.seekTo(0)
+                    playbackPositionMs = 0L
+                }
+            }
+        }
+        exoPlayer?.addListener(listener)
+
+        onDispose {
+            try {
+                exoPlayer?.removeListener(listener)
+                exoPlayer?.stop()
+                exoPlayer?.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Polling playback position while playing
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            while (isPlaying && exoPlayer != null) {
+                playbackPositionMs = exoPlayer.currentPosition
+                val dur = exoPlayer.duration
+                if (dur > 0L) totalDurationMs = dur
+                delay(80)
+            }
+        }
+    }
+
+    val progressFraction = remember(playbackPositionMs, totalDurationMs) {
+        if (totalDurationMs > 0L) (playbackPositionMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f) else 0f
+    }
+
+    val displaySeconds = remember(playbackPositionMs, totalDurationMs, isPlaying) {
+        val ms = if (isPlaying || playbackPositionMs > 0L) playbackPositionMs else totalDurationMs
+        (ms / 1000L).coerceAtLeast(0L)
+    }
+
+    val timeText = remember(displaySeconds) {
+        val m = displaySeconds / 60
+        val s = displaySeconds % 60
+        String.format("%d:%02d", m, s)
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(if (isMine) Color(0xFF0073E6) else Color(0xFF1E293B))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        // Play / Pause Circle Button
         IconButton(
-            onClick = { isPlaying = !isPlaying },
+            onClick = {
+                val player = exoPlayer
+                if (player != null) {
+                    if (isPlaying) {
+                        player.pause()
+                    } else {
+                        if (player.playbackState == Player.STATE_ENDED) {
+                            player.seekTo(0)
+                        }
+                        player.play()
+                    }
+                } else {
+                    isPlaying = !isPlaying
+                }
+            },
             modifier = Modifier
-                .size(32.dp)
+                .size(34.dp)
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.2f))
+                .background(Color.White.copy(alpha = 0.22f))
         ) {
             Icon(
                 imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                 contentDescription = if (isPlaying) "Pause" else "Play",
                 tint = Color.White,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(20.dp)
             )
         }
 
-        // Simulated audio wave bars
+        // Interactive scrubbable waveform bars
         Row(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .height(28.dp)
+                .pointerInput(totalDurationMs) {
+                    detectTapGestures { offset ->
+                        val pct = (offset.x / size.width).coerceIn(0f, 1f)
+                        if (totalDurationMs > 0L && exoPlayer != null) {
+                            val seekTo = (totalDurationMs * pct).toLong()
+                            exoPlayer.seekTo(seekTo)
+                            playbackPositionMs = seekTo
+                        }
+                    }
+                },
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            repeat(20) { i ->
-                val barHeight = (6 + (sin((i * 1.5).toDouble()) * 8).toInt()).coerceIn(4, 20)
+            val totalBars = 22
+            val activeBars = (progressFraction * totalBars).roundToInt()
+            repeat(totalBars) { i ->
+                val base = (6 + (sin((i * 1.5).toDouble()) * 7).toInt()).coerceIn(4, 18)
+                val isActive = i <= activeBars
                 Box(
                     modifier = Modifier
                         .width(2.5.dp)
-                        .height(barHeight.dp)
+                        .height(base.dp)
                         .clip(RoundedCornerShape(2.dp))
-                        .background(Color.White.copy(alpha = if (isPlaying && i < 10) 0.95f else 0.4f))
+                        .background(
+                            if (isMine) {
+                                if (isActive) Color.White else Color.White.copy(alpha = 0.4f)
+                            } else {
+                                if (isActive) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.35f)
+                            }
+                        )
                 )
             }
         }
 
+        // Playback Speed Toggle (1x, 1.5x, 2x)
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (isMine) Color.White.copy(alpha = 0.25f) else Color(0xFF334155),
+            modifier = Modifier.clickable {
+                playbackSpeed = when (playbackSpeed) {
+                    1.0f -> 1.5f
+                    1.5f -> 2.0f
+                    else -> 1.0f
+                }
+                exoPlayer?.setPlaybackSpeed(playbackSpeed)
+            }
+        ) {
+            Text(
+                text = "${if (playbackSpeed == 1.0f) "1" else if (playbackSpeed == 1.5f) "1.5" else "2"}x",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+            )
+        }
+
+        // Duration text (m:ss)
         Text(
-            text = "0:${(attachment.durationSeconds ?: 12).toString().padStart(2, '0')}",
+            text = timeText,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White

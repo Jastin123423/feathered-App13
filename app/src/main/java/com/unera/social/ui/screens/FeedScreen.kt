@@ -665,6 +665,7 @@ fun FeedScreen(
                         activePostForGallery = null
                     },
                     onLike = { onLikePost(currentPost.id) },
+                    onReact = { reaction -> onReactPost?.invoke(currentPost.id, reaction) ?: onLikePost(currentPost.id) },
                     onComment = {
                         galleryState = null
                         discussionsSheetPost = currentPost
@@ -1592,7 +1593,7 @@ fun WebPostCard(
                                 if (url != null) onOpenGallery(listOf(url), 0)
                             }
                         },
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 0.dp, vertical = 6.dp)
                     )
                 } else {
                     SharedPostNestedCard(
@@ -2447,6 +2448,7 @@ fun PostCard(
     onOpenEvent: ((Event) -> Unit)? = null,
     onOpenGroup: ((Long) -> Unit)? = null,
     onPlayMusic: ((Song) -> Unit)? = null,
+    onOpenVideo: ((Post) -> Unit)? = null,
     onOpenGallery: ((List<String>, Int) -> Unit)? = null,
     onShare: (() -> Unit)? = null,
     onDeletePost: ((Long) -> Unit)? = null,
@@ -2455,6 +2457,7 @@ fun PostCard(
     onReportPost: ((Long, String) -> Unit)? = null,
     onPushMore: ((Post) -> Unit)? = null,
     pushedPosts: Map<Long, Boolean> = emptyMap(),
+    onReact: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     WebPostCard(
@@ -2463,7 +2466,7 @@ fun PostCard(
         isFollowing = isFollowing,
         onFollowToggle = onFollowToggle,
         onLike = onLike,
-        onReact = { onLike() },
+        onReact = onReact ?: { onLike() },
         onComment = onComment,
         onShare = { onShare?.invoke() },
         onSave = onSave,
@@ -2474,6 +2477,7 @@ fun PostCard(
         onOpenEvent = { onOpenEvent?.invoke(it) },
         onOpenGroup = { onOpenGroup?.invoke(it) },
         onPlayMusic = { onPlayMusic?.invoke(it) },
+        onOpenVideo = onOpenVideo,
         onDeletePost = { onDeletePost?.invoke(it) },
         onEditPost = { id, text -> onEditPost?.invoke(id, text) },
         onHidePost = { onHidePost?.invoke(it) },
@@ -2634,12 +2638,12 @@ fun FeedStoryCard(
     onStoryClick: () -> Unit
 ) {
     Card(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(0.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0B1120)),
         border = BorderStroke(1.dp, Color(0xFF1E293B)),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .padding(horizontal = 0.dp, vertical = 6.dp)
             .clickable(onClick = onStoryClick)
     ) {
         Column {
@@ -2808,11 +2812,12 @@ fun SharedProductCard(
     onViewProduct: () -> Unit
 ) {
     Card(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(0.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0A101F)),
         border = BorderStroke(1.dp, Color(0xFF1E293B)),
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = 0.dp, vertical = 4.dp)
             .clickable(onClick = onViewProduct)
     ) {
         Column {
@@ -2983,11 +2988,12 @@ fun SharedEventCard(
     }
 
     Card(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(0.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0A101F)),
         border = BorderStroke(1.dp, Color(0xFF1E293B)),
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = 0.dp, vertical = 4.dp)
             .clickable(onClick = onEventClick)
     ) {
         Column {
@@ -3110,11 +3116,12 @@ fun SharedStoryCard(
     onStoryClick: () -> Unit
 ) {
     Card(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(0.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0A101F)),
         border = BorderStroke(1.dp, Color(0xFF1E293B)),
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = 0.dp, vertical = 4.dp)
             .clickable(onClick = onStoryClick)
     ) {
         Column {
@@ -3329,12 +3336,12 @@ fun SharedPostNestedCard(
             else emptyList()
 
         Card(
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(0.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF0A101F)),
             border = BorderStroke(1.dp, Color(0xFF334155)),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp)
+                .padding(horizontal = 0.dp, vertical = 6.dp)
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 // Nested Header

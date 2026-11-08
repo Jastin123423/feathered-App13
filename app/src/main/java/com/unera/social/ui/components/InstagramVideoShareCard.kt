@@ -129,7 +129,7 @@ fun InstagramVideoShareCard(
     val commentsCount = targetPost.commentsCount.toLong()
 
     Card(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(0.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0A101F)),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155).copy(alpha = 0.8f)),
         modifier = modifier
