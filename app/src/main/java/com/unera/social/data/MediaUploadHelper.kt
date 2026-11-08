@@ -1058,10 +1058,10 @@ object MediaUploadHelper {
 
     /**
      * Calculates intelligent, source-aware rendition targets:
-     * - 1080p: High-definition stream (proportional resolution capped at 1920x1080, VBR ~3.4 Mbps scaled by pixel ratio and capped at 88% of source)
-     * - 720p: Efficient mobile stream (proportional resolution capped at 1280x720, VBR ~1.7 Mbps scaled by pixel ratio and capped at 70% of source)
-     * - Neither rendition ever exceeds the source file size or bitrate.
-     * - Both renditions strictly preserve the source aspect ratio and orientation.
+     * - 1080p: High-definition stream targeting 27% to 30% compression from source while preserving crisp quality
+     * - 720p: Efficient mobile stream targeting 50% to 60% compression for maximum data savings
+     * - Capped against source bitrate to strictly prevent file size inflation
+     * - Both renditions strictly preserve the source aspect ratio and orientation
      */
     fun computeRenditionTargets(source: VideoSourceAnalysis): Pair<RenditionTarget, RenditionTarget> {
         val origW = source.width
@@ -1071,30 +1071,47 @@ object MediaUploadHelper {
         val dim1080 = calculateTargetDimensions(origW, origH, 1920, 1080)
         val dim720 = calculateTargetDimensions(origW, origH, 1280, 720)
 
-        // 1080p Bitrate Calculation:
-        val full1080Pixels = 1920.0 * 1080.0
-        val target1080Pixels = dim1080.width.toDouble() * dim1080.height.toDouble()
-        val pixelRatio1080 = (target1080Pixels / full1080Pixels).coerceIn(0.10, 1.0)
-        var bit1080 = (3_400_000 * pixelRatio1080).toInt().coerceIn(400_000, 3_800_000)
+        // Audio bitrate targets:
+        val audioBitrate1080 = if (source.hasAudio) {
+            when {
+                srcBitrate in 1..2_000_000 -> 96_000
+                else -> 128_000
+            }
+        } else 0
+
+        val audioBitrate720 = if (source.hasAudio) {
+            when {
+                srcBitrate in 1..2_000_000 -> 64_000
+                else -> 96_000
+            }
+        } else 0
+
+        // Standard ceilings for high-bitrate sources (e.g. 4K / 1080p sources at 5-25 Mbps):
+        val standardVideoCeiling1080 = 3_400_000
+        val standardVideoCeiling720 = 1_600_000
+
+        var bit1080: Int
+        var bit720: Int
 
         if (srcBitrate > 0) {
-            val maxAllowed1080 = (srcBitrate * 0.88).toInt()
-            bit1080 = minOf(bit1080, maxAllowed1080).coerceAtLeast(200_000)
-        }
+            // 1080p target: ~27% to 30% compression from source
+            // Video bitrate at ~64% of source bitrate + audio produces ~28% to 30% total file size reduction
+            val computed1080 = (srcBitrate * 0.64).toInt()
+            bit1080 = minOf(computed1080, standardVideoCeiling1080).coerceAtLeast(200_000)
 
-        // 720p Bitrate Calculation:
-        val full720Pixels = 1280.0 * 720.0
-        val target720Pixels = dim720.width.toDouble() * dim720.height.toDouble()
-        val pixelRatio720 = (target720Pixels / full720Pixels).coerceIn(0.10, 1.0)
-        var bit720 = (1_700_000 * pixelRatio720).toInt().coerceIn(300_000, 1_900_000)
+            // 720p target: ~50% to 60% compression from source
+            // Video bitrate at ~42% of source bitrate + audio produces ~52% to 55% total file size reduction
+            val computed720 = (srcBitrate * 0.42).toInt()
+            bit720 = minOf(computed720, standardVideoCeiling720).coerceAtLeast(150_000)
 
-        if (srcBitrate > 0) {
-            val maxAllowed720 = (srcBitrate * 0.70).toInt()
-            bit720 = minOf(bit720, maxAllowed720).coerceAtLeast(150_000)
-        }
-
-        if (bit1080 <= bit720 && srcBitrate > 0) {
-            bit1080 = minOf((srcBitrate * 0.88).toInt(), (bit720 * 1.25).toInt())
+            // Guarantee 1080p has substantially higher bitrate than 720p for superior quality
+            if (bit1080 <= bit720) {
+                bit1080 = (bit720 * 1.45).toInt().coerceAtMost((srcBitrate * 0.70).toInt())
+            }
+        } else {
+            // Fallback when source bitrate is unknown:
+            bit1080 = 2_800_000
+            bit720 = 1_400_000
         }
 
         val iFrameInterval = 1.5f
@@ -1103,7 +1120,7 @@ object MediaUploadHelper {
             label = "1080p",
             targetDimensions = dim1080,
             targetVideoBitrateBps = bit1080,
-            targetAudioBitrateBps = if (source.hasAudio) 128_000 else 0,
+            targetAudioBitrateBps = audioBitrate1080,
             iFrameIntervalSec = iFrameInterval
         )
 
@@ -1111,7 +1128,7 @@ object MediaUploadHelper {
             label = "720p",
             targetDimensions = dim720,
             targetVideoBitrateBps = bit720,
-            targetAudioBitrateBps = if (source.hasAudio) 96_000 else 0,
+            targetAudioBitrateBps = audioBitrate720,
             iFrameIntervalSec = iFrameInterval
         )
 

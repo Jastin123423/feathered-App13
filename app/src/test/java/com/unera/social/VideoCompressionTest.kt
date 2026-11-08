@@ -286,4 +286,50 @@ class VideoCompressionTest {
             file.delete()
         }
     }
+
+    @Test
+    fun testCompressionRatio_1080pAtLeast27To30Percent_720p50To60Percent() {
+        // User test video: 360x640 portrait, 136.83s, 25,118,593 bytes (~1.468 Mbps source)
+        val source = MediaUploadHelper.VideoSourceAnalysis(
+            width = 360,
+            height = 640,
+            durationSec = 136.83,
+            sourceBitrateBps = 1_468_561L,
+            sourceFileSizeBytes = 25_118_593L,
+            rotation = 0,
+            isPortrait = true,
+            isSquare = false,
+            hasAudio = true
+        )
+
+        val (target1080, target720) = MediaUploadHelper.computeRenditionTargets(source)
+
+        // Total 1080p target bitrate (video + audio):
+        val total1080Bps = target1080.targetVideoBitrateBps + target1080.targetAudioBitrateBps
+        val estimatedSize1080 = (total1080Bps / 8.0) * source.durationSec
+        val compression1080 = ((source.sourceFileSizeBytes - estimatedSize1080) / source.sourceFileSizeBytes) * 100.0
+
+        // Total 720p target bitrate (video + audio):
+        val total720Bps = target720.targetVideoBitrateBps + target720.targetAudioBitrateBps
+        val estimatedSize720 = (total720Bps / 8.0) * source.durationSec
+        val compression720 = ((source.sourceFileSizeBytes - estimatedSize720) / source.sourceFileSizeBytes) * 100.0
+
+        // 1080p must achieve at least 27% to 30% reduction:
+        assertTrue(
+            "1080p compression should be between 27% and 32% (was ${compression1080}%)",
+            compression1080 in 27.0..32.0
+        )
+
+        // 720p must achieve 50% to 60% reduction:
+        assertTrue(
+            "720p compression should be between 50% and 60% (was ${compression720}%)",
+            compression720 in 50.0..60.0
+        )
+
+        // 1080p must have significantly higher video bitrate than 720p to prioritize visual quality:
+        assertTrue(
+            "1080p video bitrate (${target1080.targetVideoBitrateBps}) must be at least 1.4x higher than 720p (${target720.targetVideoBitrateBps})",
+            target1080.targetVideoBitrateBps >= (target720.targetVideoBitrateBps * 1.4)
+        )
+    }
 }
