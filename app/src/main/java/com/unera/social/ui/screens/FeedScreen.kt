@@ -445,7 +445,7 @@ fun FeedScreen(
                 val post = remember(rawPost, allUsers) {
                     val uId = if (rawPost.userId > 0L) rawPost.userId else rawPost.author.id
                     val matchedUser = allUsers.find { it.id == uId }
-                    if (matchedUser != null) {
+                    val enrichedPost = if (matchedUser != null) {
                         val realName = matchedUser.name.ifBlank { matchedUser.username.removePrefix("@") }
                         val author = rawPost.author.copy(
                             id = matchedUser.id,
@@ -459,6 +459,23 @@ fun FeedScreen(
                     } else {
                         rawPost
                     }
+                    if (enrichedPost.sharedPost != null) {
+                        val sp = enrichedPost.sharedPost
+                        val spUid = if (sp.userId > 0L) sp.userId else sp.author.id
+                        val matchedSpUser = allUsers.find { it.id == spUid }
+                        if (matchedSpUser != null) {
+                            val spRealName = matchedSpUser.name.ifBlank { matchedSpUser.username.removePrefix("@") }
+                            val spAuthor = sp.author.copy(
+                                id = matchedSpUser.id,
+                                name = if (spRealName.isNotBlank() && !spRealName.startsWith("User")) spRealName else sp.author.name,
+                                username = if (matchedSpUser.username.isNotBlank()) matchedSpUser.username else sp.author.username,
+                                profileImageUrl = matchedSpUser.profileImageUrl.ifBlank { sp.author.profileImageUrl },
+                                isVerified = matchedSpUser.isVerified || sp.author.isVerified,
+                                role = matchedSpUser.role.ifBlank { sp.author.role }
+                            )
+                            enrichedPost.copy(sharedPost = sp.copy(author = spAuthor, userId = matchedSpUser.id))
+                        } else enrichedPost
+                    } else enrichedPost
                 }
                 val isGroupPost = post.groupId != null || post.postType == "group_post"
                 val isMarketplace = post.product != null || post.postType == "product" || post.postType == "marketplace"
@@ -500,6 +517,7 @@ fun FeedScreen(
                         if (isGuest) onRequestAuth() else onSavePost(post.id)
                     },
                     onUserClick = { onUserClick(post.author) },
+                    onAuthorClick = { user -> onUserClick(user) },
                     onOpenGallery = { imgs, idx ->
                         activePostForGallery = post
                         galleryState = Pair(imgs, idx)
@@ -1149,6 +1167,7 @@ fun WebPostCard(
     onShare: () -> Unit = {},
     onSave: () -> Unit = {},
     onUserClick: () -> Unit = {},
+    onAuthorClick: ((User) -> Unit)? = null,
     onOpenGallery: (List<String>, Int) -> Unit = { _, _ -> },
     onOpenReactions: () -> Unit = {},
     onOpenProduct: (Product) -> Unit = {},
@@ -1216,15 +1235,42 @@ fun WebPostCard(
                 .fillMaxWidth()
                 .clipToBounds()
         ) {
-            // Header: Author / Group / Ad info
+            // Header: Author / Group / Shared / Ad info
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Avatar with group sub-icon or regular
-                if (post.groupId != null) {
+                // Avatar with group sub-icon, shared post dual avatar, or regular
+                if (post.sharedPost != null) {
+                    Box(
+                        modifier = Modifier.size(46.dp)
+                    ) {
+                        FeatheredAvatar(
+                            name = post.author.name,
+                            username = post.author.username,
+                            imageUrl = post.author.profileImageUrl,
+                            size = 36.dp,
+                            borderWidth = 1.dp,
+                            fontSize = 14.sp,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .clickable { onAuthorClick?.invoke(post.author) ?: onUserClick() }
+                        )
+                        FeatheredAvatar(
+                            name = post.sharedPost.author.name,
+                            username = post.sharedPost.author.username,
+                            imageUrl = post.sharedPost.author.profileImageUrl,
+                            size = 22.dp,
+                            borderWidth = 1.5.dp,
+                            fontSize = 8.sp,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .clickable { onAuthorClick?.invoke(post.sharedPost.author) ?: onUserClick() }
+                        )
+                    }
+                } else if (post.groupId != null) {
                     Box(
                         modifier = Modifier
                             .size(44.dp)
@@ -1287,111 +1333,204 @@ fun WebPostCard(
                 Spacer(modifier = Modifier.width(10.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (post.groupId != null) {
+                    if (post.sharedPost != null) {
+                        // 1. Sharer Name (e.g. Jastin Beda)
+                        val sharerDisplayName = post.author.name.takeIf { it.isNotBlank() && !it.startsWith("User") }
+                            ?: post.author.username.takeIf { it.isNotBlank() && !it.startsWith("@user") }?.removePrefix("@")
+                            ?: post.author.name.ifBlank { "Feathered User" }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
                             Text(
-                                text = post.groupName ?: "Group",
+                                text = sharerDisplayName,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 21.sp,
+                                fontSize = 19.sp,
                                 color = Color(0xFFF8FAFC),
-                                modifier = Modifier.clickable { post.groupId?.let { onOpenGroup(it) } }
+                                modifier = Modifier.clickable { onAuthorClick?.invoke(post.author) ?: onUserClick() }
                             )
-                        } else {
-                            val authorDisplayName = post.author.name.takeIf { it.isNotBlank() && !it.startsWith("User") }
-                                ?: post.author.username.takeIf { it.isNotBlank() && !it.startsWith("@user") }?.removePrefix("@")
-                                ?: post.author.name.ifBlank { "Feathered User" }
-                            Text(
-                                text = authorDisplayName,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 21.sp,
-                                color = Color(0xFFF8FAFC),
-                                modifier = Modifier.clickable(onClick = onUserClick)
-                            )
-                        }
-
-                        if (post.author.isVerified) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            VerifiedBadge(size = 21.dp)
-                        }
-
-                        val isAdPost = post.isSponsored || post.postType == "ad" || post.postType == "sponsored"
-                        if (isAdPost) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(Color(0xFF1E293B))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text("Ad", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
+                            if (post.author.isVerified) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                VerifiedBadge(size = 17.dp)
                             }
                         }
-                    }
 
-                    // Sub-line: author / timestamp • globe • feeling / group / etc.
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        val isAdPost = post.isSponsored || post.postType == "ad" || post.postType == "sponsored"
-                        val displayTime = if (isAdPost) "Ad" else PostsApiService.formatRelativeTime(post.timestamp).let { if (it.isBlank() || it.equals("Sponsored", ignoreCase = true)) "Ad" else it }
-                        if (post.groupId != null) {
-                            Text(
-                                text = post.author.name,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color(0xFFCBD5E1),
-                                modifier = Modifier.clickable(onClick = onUserClick)
-                            )
-                            Text(
-                                text = " • $displayTime • ",
-                                fontSize = 13.sp,
-                                color = Color(0xFF94A3B8)
-                            )
+                        // 2. Shared indicator
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 1.dp)
+                        ) {
                             Icon(
-                                imageVector = Icons.Default.Groups,
-                                contentDescription = "Group",
-                                tint = Color(0xFF94A3B8),
-                                modifier = Modifier
-                                    .size(13.dp)
-                                    .clickable { post.groupId?.let { onOpenGroup(it) } }
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Shared",
+                                tint = Color(0xFF1877F2),
+                                modifier = Modifier.size(12.dp)
                             )
-                        } else {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Shared",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1877F2)
+                            )
+                        }
+
+                        // 3. Original Author Name (e.g. Hamis John)
+                        val originalAuthorName = post.sharedPost.author.name.takeIf { it.isNotBlank() && !it.startsWith("User") }
+                            ?: post.sharedPost.author.username.takeIf { it.isNotBlank() && !it.startsWith("@user") }?.removePrefix("@")
+                            ?: post.sharedPost.author.name.ifBlank { "Feathered User" }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = originalAuthorName,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 17.sp,
+                                color = Color(0xFF38BDF8),
+                                modifier = Modifier.clickable { onAuthorClick?.invoke(post.sharedPost.author) ?: onUserClick() }
+                            )
+                            if (post.sharedPost.author.isVerified) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                VerifiedBadge(size = 15.dp)
+                            }
+                        }
+
+                        // 4. Timestamp & relative info
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            val displayTime = PostsApiService.formatRelativeTime(post.timestamp).let { if (it.isBlank()) "Just now" else it }
                             Text(
                                 text = displayTime,
-                                fontSize = 13.sp,
+                                fontSize = 12.sp,
                                 color = Color(0xFF94A3B8)
                             )
-                            Text("•", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                            Text("•", fontSize = 12.sp, color = Color(0xFF94A3B8))
                             Icon(
                                 imageVector = Icons.Default.Public,
                                 contentDescription = "Public",
                                 tint = Color(0xFF94A3B8),
-                                modifier = Modifier.size(12.dp)
+                                modifier = Modifier.size(11.dp)
                             )
+                            if (post.sharedPost.timestamp.isNotBlank()) {
+                                Text("•", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                                Text(
+                                    text = PostsApiService.formatRelativeTime(post.sharedPost.timestamp),
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF64748B)
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (post.groupId != null) {
+                                Text(
+                                    text = post.groupName ?: "Group",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 21.sp,
+                                    color = Color(0xFFF8FAFC),
+                                    modifier = Modifier.clickable { post.groupId?.let { onOpenGroup(it) } }
+                                )
+                            } else {
+                                val authorDisplayName = post.author.name.takeIf { it.isNotBlank() && !it.startsWith("User") }
+                                    ?: post.author.username.takeIf { it.isNotBlank() && !it.startsWith("@user") }?.removePrefix("@")
+                                    ?: post.author.name.ifBlank { "Feathered User" }
+                                Text(
+                                    text = authorDisplayName,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 21.sp,
+                                    color = Color(0xFFF8FAFC),
+                                    modifier = Modifier.clickable(onClick = onUserClick)
+                                )
+                            }
+
+                            if (post.author.isVerified) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                VerifiedBadge(size = 21.dp)
+                            }
+
+                            val isAdPost = post.isSponsored || post.postType == "ad" || post.postType == "sponsored"
+                            if (isAdPost) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(Color(0xFF1E293B))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Ad", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
 
-                        if (!post.feeling.isNullOrBlank()) {
-                            Text("•", fontSize = 13.sp, color = Color(0xFF94A3B8))
-                            Text(
-                                text = "feeling ${post.feeling}",
-                                fontSize = 13.sp,
-                                color = Color(0xFF94A3B8)
-                            )
-                        }
+                        // Sub-line: author / timestamp • globe • feeling / group / etc.
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val isAdPost = post.isSponsored || post.postType == "ad" || post.postType == "sponsored"
+                            val displayTime = if (isAdPost) "Ad" else PostsApiService.formatRelativeTime(post.timestamp).let { if (it.isBlank() || it.equals("Sponsored", ignoreCase = true)) "Ad" else it }
+                            if (post.groupId != null) {
+                                Text(
+                                    text = post.author.name,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFFCBD5E1),
+                                    modifier = Modifier.clickable(onClick = onUserClick)
+                                )
+                                Text(
+                                    text = " • $displayTime • ",
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.Groups,
+                                    contentDescription = "Group",
+                                    tint = Color(0xFF94A3B8),
+                                    modifier = Modifier
+                                        .size(13.dp)
+                                        .clickable { post.groupId?.let { onOpenGroup(it) } }
+                                )
+                            } else {
+                                Text(
+                                    text = displayTime,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                                Text("•", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                                Icon(
+                                    imageVector = Icons.Default.Public,
+                                    contentDescription = "Public",
+                                    tint = Color(0xFF94A3B8),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
 
-                        if (!post.location.isNullOrBlank()) {
-                            Text("•", fontSize = 13.sp, color = Color(0xFF94A3B8))
-                            Text(
-                                text = post.location,
-                                fontSize = 13.sp,
-                                color = Color(0xFF94A3B8),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            if (!post.feeling.isNullOrBlank()) {
+                                Text("•", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                                Text(
+                                    text = "feeling ${post.feeling}",
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+
+                            if (!post.location.isNullOrBlank()) {
+                                Text("•", fontSize = 13.sp, color = Color(0xFF94A3B8))
+                                Text(
+                                    text = post.location,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF94A3B8),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
@@ -1450,183 +1589,173 @@ fun WebPostCard(
                 )
             }
 
-            // Post Text Content
-            // Post Text Content (avoid duplicating event/product/song titles that are already inside their respective cards)
+            // Post Text Content & Media
             val cleanContent = remember(post.content) {
                 post.content.trim().let { if (it.equals("null", ignoreCase = true) || it.equals("undefined", ignoreCase = true)) "" else it }
             }
-            val isDuplicateText = (post.event != null && (cleanContent.equals(post.event.title, ignoreCase = true) || cleanContent.equals(post.event.description, ignoreCase = true))) ||
-                    (post.product != null && (cleanContent.equals(post.product.title, ignoreCase = true) || cleanContent.equals(post.product.description, ignoreCase = true))) ||
-                    (post.song != null && cleanContent.contains(post.song.title, ignoreCase = true))
 
-            val hasMedia = mediaList.isNotEmpty() || !post.mediaUrl.isNullOrBlank() || post.videoUrl != null
-            val hasBackground = !hasMedia &&
-                    !post.backgroundStyle.isNullOrBlank() &&
-                    !post.backgroundStyle.equals("none", ignoreCase = true) &&
-                    !post.backgroundStyle.equals("null", ignoreCase = true) &&
-                    !post.backgroundStyle.startsWith("style:none") &&
-                    !post.backgroundStyle.startsWith("none|")
-
-            if (!isDuplicateText && cleanContent.isNotBlank() && !hasBackground) {
-                val words = remember(cleanContent) {
-                    cleanContent.split(Regex("\\s+")).filter { it.isNotBlank() }
-                }
-                val hasMoreThan8Words = words.size > 8
-                val truncatedContent = remember(cleanContent, words) {
-                    if (words.size > 8) words.take(8).joinToString(" ") + "…" else cleanContent
+            if (post.sharedPost != null) {
+                // Sharer's caption if any
+                if (cleanContent.isNotBlank()) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                        Text(
+                            text = cleanContent,
+                            fontSize = 20.sp,
+                            lineHeight = 28.sp,
+                            color = Color(0xFFE4E6EB)
+                        )
+                    }
                 }
 
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
-                    Text(
-                        text = if (!hasMoreThan8Words || isExpandedText) cleanContent else truncatedContent,
-                        fontSize = 20.sp,
-                        lineHeight = 28.sp,
-                        color = Color(0xFFE4E6EB)
+                // Shared Original Post content & media (no container card, edge-to-edge left 0 and right 0)
+                val sharedPost = post.sharedPost
+                var isExpandedSharedText by remember(sharedPost.id) { mutableStateOf(false) }
+                val sharedCleanContent = remember(sharedPost.content) {
+                    sharedPost.content.trim().let { if (it.equals("null", ignoreCase = true) || it.equals("undefined", ignoreCase = true)) "" else it }
+                }
+                val sharedMediaList = remember(sharedPost.mediaUrl, sharedPost.mediaUrls) {
+                    if (sharedPost.mediaUrls.isNotEmpty()) sharedPost.mediaUrls
+                    else if (!sharedPost.mediaUrl.isNullOrBlank()) listOf(sharedPost.mediaUrl)
+                    else emptyList()
+                }
+                val isSharedVideo = sharedPost.postType == "video" || sharedPost.postType == "reel" ||
+                        sharedPost.mediaType == "video" ||
+                        PostsApiService.isValidVideoUrl(sharedPost.videoUrl) ||
+                        (sharedMediaList.size == 1 && PostsApiService.isValidVideoUrl(sharedMediaList[0])) ||
+                        (sharedPost.mediaType == "video" && PostsApiService.isValidVideoUrl(sharedPost.mediaUrl)) ||
+                        (sharedPost.mediaMeta.firstOrNull()?.type == "video" && PostsApiService.isValidVideoUrl(sharedPost.mediaMeta.firstOrNull()?.resolution720 ?: sharedPost.mediaMeta.firstOrNull()?.original)) ||
+                        (sharedPost.getDefaultPlayableVideoUrl().isNotBlank() && PostsApiService.isValidVideoUrl(sharedPost.getDefaultPlayableVideoUrl()))
+
+                val hasSharedMedia = sharedMediaList.isNotEmpty() || isSharedVideo || !sharedPost.mediaUrl.isNullOrBlank() || sharedPost.videoUrl != null
+                val hasSharedBackground = !hasSharedMedia &&
+                        !sharedPost.backgroundStyle.isNullOrBlank() &&
+                        !sharedPost.backgroundStyle.equals("none", ignoreCase = true) &&
+                        !sharedPost.backgroundStyle.equals("null", ignoreCase = true) &&
+                        !sharedPost.backgroundStyle.startsWith("style:none") &&
+                        !sharedPost.backgroundStyle.startsWith("none|")
+
+                if (hasSharedBackground && sharedCleanContent.isNotBlank()) {
+                    TextPostBackgroundView(
+                        backgroundStyle = sharedPost.backgroundStyle,
+                        content = sharedCleanContent,
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    if (hasMoreThan8Words) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { isExpandedText = !isExpandedText }
-                                .padding(vertical = 4.dp, horizontal = 2.dp)
-                        ) {
-                            Text(
-                                text = if (isExpandedText) "See Less" else "See More",
-                                color = Color(0xFF1877F2),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = if (isExpandedText) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                contentDescription = null,
-                                tint = Color(0xFF1877F2),
-                                modifier = Modifier.size(18.dp)
-                            )
+                } else if (sharedCleanContent.isNotBlank()) {
+                    val sharedWords = remember(sharedCleanContent) {
+                        sharedCleanContent.split(Regex("\\s+")).filter { it.isNotBlank() }
+                    }
+                    val sharedHasMoreThan8Words = sharedWords.size > 8
+                    val sharedTruncatedContent = remember(sharedCleanContent, sharedWords) {
+                        if (sharedWords.size > 8) sharedWords.take(8).joinToString(" ") + "…" else sharedCleanContent
+                    }
+
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                        Text(
+                            text = if (!sharedHasMoreThan8Words || isExpandedSharedText) sharedCleanContent else sharedTruncatedContent,
+                            fontSize = 20.sp,
+                            lineHeight = 28.sp,
+                            color = Color(0xFFCBD5E1)
+                        )
+                        if (sharedHasMoreThan8Words) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { isExpandedSharedText = !isExpandedSharedText }
+                                    .padding(vertical = 4.dp, horizontal = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (isExpandedSharedText) "See Less" else "See More",
+                                    color = Color(0xFF1877F2),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = if (isExpandedSharedText) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = Color(0xFF1877F2),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
-            } else if (hasBackground && cleanContent.isNotBlank()) {
-                // Text post with animated or styled background
-                TextPostBackgroundView(
-                    backgroundStyle = post.backgroundStyle,
-                    content = cleanContent,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
 
-            // Special Post: Job Posting
-            if (post.jobTitle != null) {
-                JobPostingCard(
-                    jobTitle = post.jobTitle,
-                    company = post.company ?: "",
-                    location = post.location ?: "Tanzania",
-                    salary = post.salary ?: "",
-                    jobType = post.jobType ?: "Full-time",
-                    onApply = { /* Apply */ }
-                )
-            }
-
-            // Special Post: Product / MarketPoint (standalone)
-            if (post.product != null && post.sharedPost == null) {
-                ProductPostCard(
-                    product = post.product,
-                    onViewProduct = { onOpenProduct(post.product) }
-                )
-            }
-
-            // Special Post: Event Post (standalone)
-            if (post.event != null && post.sharedPost == null) {
-                EventPostCard(
-                    event = post.event,
-                    currentUser = currentUser,
-                    onRequestAuth = onRequestAuth,
-                    onRsvp = onRsvpEvent,
-                    onEventClick = { onOpenEvent(post.event) }
-                )
-            }
-
-            // Special Post: Music (standalone)
-            if (post.song != null && post.sharedPost == null) {
-                MusicPostCard(
-                    song = post.song,
-                    onPlay = { onPlayMusic(post.song) }
-                )
-            }
-
-            // Special Post: Story Post
-            if (post.story != null || post.postType == "story") {
-                val storyItem = post.story ?: Story(
-                    id = post.id,
-                    author = post.author,
-                    mediaUrl = post.mediaUrl ?: (post.mediaUrls.firstOrNull() ?: ""),
-                    type = if (post.mediaUrl?.endsWith(".mp4", ignoreCase = true) == true) "video" else if (post.mediaUrl.isNullOrBlank()) "text" else "image",
-                    textContent = post.content,
-                    backgroundStyle = post.backgroundStyle ?: "",
-                    timestamp = post.timestamp
-                )
-                FeedStoryCard(
-                    story = storyItem,
-                    post = post,
-                    onStoryClick = { onStoryClick?.invoke(storyItem) }
-                )
-            }
-
-            // Special Post: Shared Post
-            if (post.sharedPost != null) {
-                val isSharedVideo = post.sharedPost.postType == "video" ||
-                        post.sharedPost.postType == "reel" ||
-                        post.sharedPost.mediaUrl?.endsWith(".mp4", ignoreCase = true) == true ||
-                        post.sharedPost.mediaUrl?.contains("video", ignoreCase = true) == true
-                if (isSharedVideo) {
-                    InstagramVideoShareCard(
-                        post = post,
-                        originalPost = post.sharedPost,
-                        ownerAuthor = post.sharedPost.author,
-                        currentUser = currentUser,
-                        onProfileClick = { _ -> onUserClick() },
-                        onVideoClick = { _ ->
-                            onOpenVideo?.invoke(post.sharedPost) ?: run {
-                                val url = post.sharedPost.mediaUrl
-                                if (url != null) onOpenGallery(listOf(url), 0)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 0.dp, vertical = 6.dp)
+                // Special Post types within shared post
+                if (sharedPost.product != null || sharedPost.postType == "marketplace" || sharedPost.postType == "product") {
+                    val prod = sharedPost.product ?: Product(
+                        id = sharedPost.id,
+                        title = sharedPost.content.ifBlank { "Marketplace Item" },
+                        price = 50000.0,
+                        imageUrl = sharedPost.mediaUrl ?: "",
+                        category = "General",
+                        location = sharedPost.location ?: "Tanzania",
+                        description = sharedPost.content,
+                        seller = sharedPost.author
                     )
-                } else {
-                    SharedPostNestedCard(
-                        sharedPost = post.sharedPost,
-                        onOpenGallery = onOpenGallery,
-                        onOpenProduct = onOpenProduct,
-                        onOpenEvent = onOpenEvent,
-                        onPlayMusic = onPlayMusic,
-                        onStoryClick = onStoryClick,
-                        onOpenGroup = onOpenGroup
+                    ProductPostCard(
+                        product = prod,
+                        onViewProduct = { onOpenProduct(prod) }
+                    )
+                } else if (sharedPost.event != null || sharedPost.postType == "event") {
+                    val ev = sharedPost.event ?: Event(
+                        id = sharedPost.id,
+                        title = sharedPost.content.ifBlank { "Event" },
+                        date = "Oct 24, 2026",
+                        location = sharedPost.location ?: "Tanzania",
+                        imageUrl = sharedPost.mediaUrl ?: "",
+                        description = sharedPost.content,
+                        organizer = sharedPost.author
+                    )
+                    EventPostCard(
+                        event = ev,
+                        currentUser = currentUser,
+                        onRequestAuth = onRequestAuth,
+                        onRsvp = onRsvpEvent,
+                        onEventClick = { onOpenEvent(ev) }
+                    )
+                } else if (sharedPost.song != null || sharedPost.postType == "music" || sharedPost.postType == "song") {
+                    val s = sharedPost.song ?: Song(
+                        id = sharedPost.id.toString(),
+                        title = sharedPost.content.ifBlank { "Track" },
+                        artist = sharedPost.author.name,
+                        audioUrl = sharedPost.mediaUrl ?: "",
+                        cover = sharedPost.mediaUrl ?: ""
+                    )
+                    MusicPostCard(
+                        song = s,
+                        onPlay = { onPlayMusic(s) }
+                    )
+                } else if (sharedPost.story != null || sharedPost.postType == "story") {
+                    val storyItem = sharedPost.story ?: Story(
+                        id = sharedPost.id,
+                        author = sharedPost.author,
+                        mediaUrl = sharedPost.mediaUrl ?: (sharedPost.mediaUrls.firstOrNull() ?: ""),
+                        type = if (sharedPost.mediaUrl?.endsWith(".mp4", ignoreCase = true) == true) "video" else if (sharedPost.mediaUrl.isNullOrBlank()) "text" else "image",
+                        textContent = sharedPost.content,
+                        backgroundStyle = sharedPost.backgroundStyle ?: "",
+                        timestamp = sharedPost.timestamp
+                    )
+                    FeedStoryCard(
+                        story = storyItem,
+                        post = sharedPost,
+                        onStoryClick = { onStoryClick?.invoke(storyItem) }
                     )
                 }
-            }
 
-            // Attached Video or Regular Media Grid (1, 2, 3, 4, 5, 6+ images)
-            val isPostVideo = post.postType == "video" || post.postType == "reel" ||
-                    post.mediaType == "video" ||
-                    PostsApiService.isValidVideoUrl(post.videoUrl) ||
-                    (mediaList.size == 1 && PostsApiService.isValidVideoUrl(mediaList[0])) ||
-                    (post.mediaType == "video" && PostsApiService.isValidVideoUrl(post.mediaUrl)) ||
-                    (post.mediaMeta.firstOrNull()?.type == "video" && PostsApiService.isValidVideoUrl(post.mediaMeta.firstOrNull()?.resolution720 ?: post.mediaMeta.firstOrNull()?.original)) ||
-                    (post.getDefaultPlayableVideoUrl().isNotBlank() && PostsApiService.isValidVideoUrl(post.getDefaultPlayableVideoUrl()))
-
-            if (post.product == null && post.event == null && post.sharedPost == null && (post.story == null && post.postType != "story") && !hasBackground) {
-                if (isPostVideo) {
+                // Video or Image Grid for shared post:
+                if (isSharedVideo) {
                     Spacer(modifier = Modifier.height(6.dp))
                     FeedVideoPostThumbnail(
-                        post = post,
+                        post = sharedPost,
                         onClick = {
-                            onOpenVideo?.invoke(post)
-                        }
+                            onOpenVideo?.invoke(sharedPost)
+                        },
+                        modifier = Modifier.fillMaxWidth()
                     )
-                } else if (mediaList.isNotEmpty()) {
+                } else if (sharedMediaList.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Box(
                         modifier = Modifier
@@ -1634,9 +1763,161 @@ fun WebPostCard(
                             .clipToBounds()
                     ) {
                         MediaGrid(
-                            images = mediaList,
-                            onImageClick = { idx -> onOpenGallery(mediaList, idx) }
+                            images = sharedMediaList,
+                            onImageClick = { idx -> onOpenGallery(sharedMediaList, idx) }
                         )
+                    }
+                }
+            } else {
+                // Regular non-shared post handling
+                val isDuplicateText = (post.event != null && (cleanContent.equals(post.event.title, ignoreCase = true) || cleanContent.equals(post.event.description, ignoreCase = true))) ||
+                        (post.product != null && (cleanContent.equals(post.product.title, ignoreCase = true) || cleanContent.equals(post.product.description, ignoreCase = true))) ||
+                        (post.song != null && cleanContent.contains(post.song.title, ignoreCase = true))
+
+                val hasMedia = mediaList.isNotEmpty() || !post.mediaUrl.isNullOrBlank() || post.videoUrl != null
+                val hasBackground = !hasMedia &&
+                        !post.backgroundStyle.isNullOrBlank() &&
+                        !post.backgroundStyle.equals("none", ignoreCase = true) &&
+                        !post.backgroundStyle.equals("null", ignoreCase = true) &&
+                        !post.backgroundStyle.startsWith("style:none") &&
+                        !post.backgroundStyle.startsWith("none|")
+
+                if (!isDuplicateText && cleanContent.isNotBlank() && !hasBackground) {
+                    val words = remember(cleanContent) {
+                        cleanContent.split(Regex("\\s+")).filter { it.isNotBlank() }
+                    }
+                    val hasMoreThan8Words = words.size > 8
+                    val truncatedContent = remember(cleanContent, words) {
+                        if (words.size > 8) words.take(8).joinToString(" ") + "…" else cleanContent
+                    }
+
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                        Text(
+                            text = if (!hasMoreThan8Words || isExpandedText) cleanContent else truncatedContent,
+                            fontSize = 20.sp,
+                            lineHeight = 28.sp,
+                            color = Color(0xFFE4E6EB)
+                        )
+                        if (hasMoreThan8Words) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { isExpandedText = !isExpandedText }
+                                    .padding(vertical = 4.dp, horizontal = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (isExpandedText) "See Less" else "See More",
+                                    color = Color(0xFF1877F2),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = if (isExpandedText) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = Color(0xFF1877F2),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                } else if (hasBackground && cleanContent.isNotBlank()) {
+                    TextPostBackgroundView(
+                        backgroundStyle = post.backgroundStyle,
+                        content = cleanContent,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Special Post: Job Posting
+                if (post.jobTitle != null) {
+                    JobPostingCard(
+                        jobTitle = post.jobTitle,
+                        company = post.company ?: "",
+                        location = post.location ?: "Tanzania",
+                        salary = post.salary ?: "",
+                        jobType = post.jobType ?: "Full-time",
+                        onApply = { /* Apply */ }
+                    )
+                }
+
+                // Special Post: Product / MarketPoint (standalone)
+                if (post.product != null) {
+                    ProductPostCard(
+                        product = post.product,
+                        onViewProduct = { onOpenProduct(post.product) }
+                    )
+                }
+
+                // Special Post: Event Post (standalone)
+                if (post.event != null) {
+                    EventPostCard(
+                        event = post.event,
+                        currentUser = currentUser,
+                        onRequestAuth = onRequestAuth,
+                        onRsvp = onRsvpEvent,
+                        onEventClick = { onOpenEvent(post.event) }
+                    )
+                }
+
+                // Special Post: Music (standalone)
+                if (post.song != null) {
+                    MusicPostCard(
+                        song = post.song,
+                        onPlay = { onPlayMusic(post.song) }
+                    )
+                }
+
+                // Special Post: Story Post
+                if (post.story != null || post.postType == "story") {
+                    val storyItem = post.story ?: Story(
+                        id = post.id,
+                        author = post.author,
+                        mediaUrl = post.mediaUrl ?: (post.mediaUrls.firstOrNull() ?: ""),
+                        type = if (post.mediaUrl?.endsWith(".mp4", ignoreCase = true) == true) "video" else if (post.mediaUrl.isNullOrBlank()) "text" else "image",
+                        textContent = post.content,
+                        backgroundStyle = post.backgroundStyle ?: "",
+                        timestamp = post.timestamp
+                    )
+                    FeedStoryCard(
+                        story = storyItem,
+                        post = post,
+                        onStoryClick = { onStoryClick?.invoke(storyItem) }
+                    )
+                }
+
+                // Attached Video or Regular Media Grid (1, 2, 3, 4, 5, 6+ images)
+                val isPostVideo = post.postType == "video" || post.postType == "reel" ||
+                        post.mediaType == "video" ||
+                        PostsApiService.isValidVideoUrl(post.videoUrl) ||
+                        (mediaList.size == 1 && PostsApiService.isValidVideoUrl(mediaList[0])) ||
+                        (post.mediaType == "video" && PostsApiService.isValidVideoUrl(post.mediaUrl)) ||
+                        (post.mediaMeta.firstOrNull()?.type == "video" && PostsApiService.isValidVideoUrl(post.mediaMeta.firstOrNull()?.resolution720 ?: post.mediaMeta.firstOrNull()?.original)) ||
+                        (post.getDefaultPlayableVideoUrl().isNotBlank() && PostsApiService.isValidVideoUrl(post.getDefaultPlayableVideoUrl()))
+
+                if (post.product == null && post.event == null && (post.story == null && post.postType != "story") && !hasBackground) {
+                    if (isPostVideo) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        FeedVideoPostThumbnail(
+                            post = post,
+                            onClick = {
+                                onOpenVideo?.invoke(post)
+                            }
+                        )
+                    } else if (mediaList.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clipToBounds()
+                        ) {
+                            MediaGrid(
+                                images = mediaList,
+                                onImageClick = { idx -> onOpenGallery(mediaList, idx) }
+                            )
+                        }
                     }
                 }
             }
@@ -2458,6 +2739,7 @@ fun PostCard(
     onPushMore: ((Post) -> Unit)? = null,
     pushedPosts: Map<Long, Boolean> = emptyMap(),
     onReact: ((String) -> Unit)? = null,
+    onAuthorClick: ((User) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     WebPostCard(
@@ -2471,6 +2753,7 @@ fun PostCard(
         onShare = { onShare?.invoke() },
         onSave = onSave,
         onUserClick = onUserClick,
+        onAuthorClick = onAuthorClick,
         onOpenGallery = { list, idx -> onOpenGallery?.invoke(list, idx) },
         onOpenReactions = {},
         onOpenProduct = { onOpenProduct?.invoke(it) },
